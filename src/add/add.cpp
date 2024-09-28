@@ -1,6 +1,10 @@
 #include "add.hpp"
 
-int add(int x, int y)
+template <typename T>
+T add(T x, T y)
 {
     return x + y;
 }
+
+template int add(int, int);
+template float add(float, float);
