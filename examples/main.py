@@ -1,8 +1,9 @@
-from attention.impl import Attention, FlashAttention
+from attention.impl import Attention, FlashAttention, FlashAttention_v2
 from utils.diff import Diff
 
 import torch
 import argparse
+import numpy as np
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='attention implementation')
@@ -19,11 +20,12 @@ if __name__ == '__main__':
     query = torch.randn(size=(args.batch, args.seq_q, args.q_head, args.head_size))
     key = torch.randn(size=(args.batch, args.seq_kv, args.kv_head, args.head_size))
     value = torch.randn(size=(args.batch, args.seq_kv, args.kv_head, args.head_size))
+    args.softmax_lse = 1.0 / np.sqrt(args.head_size)
 
     # base_output = torch.nn.functional.scaled_dot_product_attention(query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2), is_causal=args.causal, scale=args.softmax_scale)
-    attn = Attention(args.batch, args.q_head, args.kv_head, args.head_size, args.seq_q, args.seq_kv, args.softmax_scale, args.causal)
-    base_output, base_lse = attn(query, key, value)
     attn = FlashAttention(args.batch, args.q_head, args.kv_head, args.head_size, args.seq_q, args.seq_kv, args.softmax_scale, args.causal)
+    base_output, base_lse = attn(query, key, value)
+    attn = FlashAttention_v2(args.batch, args.q_head, args.kv_head, args.head_size, args.seq_q, args.seq_kv, args.softmax_scale, args.causal)
     real_output, real_lse = attn(query, key, value)
 
     differ = Diff()

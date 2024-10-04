@@ -1,4 +1,8 @@
 import torch
+import numpy as np
+
+LOG2E = np.log2(np.e)
+MAX_THRESHOLD = 4.0
 
 class Attention:
     def __init__(self, batch, q_head, kv_head, head_size, seq_q, seq_kv, softmax_scale, causal):
@@ -42,12 +46,12 @@ class FlashAttention(Attention):
         self.block_q = 64
         self.block_kv = 512
 
-    def compute_block(self, q, k, v, qkv, rmax, rsum):
-        qk = torch.matmul(q, k.t()) * self.softmax_scale
+    def compute_block(self, q, k, v, qkv, rmax, rsum, j):
+        qk = torch.matmul(q, k.t()) * self.softmax_scale * LOG2E
         cmax = torch.amax(qk, dim=-1, keepdim=True)
         cmax = torch.maximum(cmax, rmax)
-        qk = torch.exp(qk - cmax)
-        scale = torch.exp(rmax - cmax)
+        qk = torch.pow(2, qk - cmax)
+        scale = torch.pow(2, rmax - cmax)
         csum = torch.sum(qk, dim=-1, keepdim=True)
         csum = rsum * scale + csum
         qkv = qkv * scale + torch.matmul(qk, v)
@@ -71,8 +75,42 @@ class FlashAttention(Attention):
                         sk = min(self.block_kv, self.seq_kv - j * self.block_kv)
                         k = key[b, j * self.block_kv : j * self.block_kv + sk, h // self.head_per_group]
                         v = value[b, j * self.block_kv : j * self.block_kv + sk, h // self.head_per_group]
-                        qkv, rmax, rsum = self.compute_block(q, k, v, qkv, rmax, rsum)
+                        qkv, rmax, rsum = self.compute_block(q, k, v, qkv, rmax, rsum, j)
                     output[b, i * self.block_q : i * self.block_q + sq, h] = qkv / rsum
-                    lse[b, h, i * self.block_q : i * self.block_q + sq] = torch.squeeze(rmax + torch.log(rsum))
+                    lse[b, h, i * self.block_q : i * self.block_q + sq] = torch.squeeze(rmax / LOG2E + torch.log(rsum))
 
         return output, lse
+
+class FlashAttention_v2(FlashAttention):
+    def __init__(self, batch, q_head, kv_head, head_size, seq_q, seq_kv, softmax_scale, causal):
+        super().__init__(batch, q_head, kv_head, head_size, seq_q, seq_kv, softmax_scale, causal)
+
+    def compute_block(self, q, k, v, qkv, rmax, rsum, j):
+        if j == 0:
+            qk = torch.matmul(q, k.t()) * self.softmax_scale * LOG2E
+        else:
+            qk = qk = torch.matmul(q, k.t()) * self.softmax_scale * LOG2E - rmax
+        tmax = torch.amax(qk, dim=-1, keepdim=True)
+        if j == 0:
+            qk = qk - tmax
+            cmax = tmax
+        else:
+            max_value = torch.amax(tmax)
+            cmax = tmax + rmax
+            if max_value <= MAX_THRESHOLD:
+                tmax = rmax
+            else:
+                qk = qk - tmax
+                tmax = cmax
+        qk = torch.pow(2, qk)
+        csum = torch.sum(qk, dim=-1, keepdim=True)
+        cmax = torch.maximum(cmax, rmax)
+        tscale = torch.pow(2, tmax - cmax)
+        rscale = torch.pow(2, rmax - cmax)
+        csum = rsum * rscale + csum * tscale
+        qkv = qkv * rscale + torch.matmul(qk, v) * tscale
+
+        return qkv, cmax, csum
+
+    def __call__(self, query, key, value):
+        return super().__call__(query, key, value)
