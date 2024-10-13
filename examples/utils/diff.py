@@ -14,7 +14,7 @@ class Diff:
         numerator = torch.sum(torch.pow(base - real, 2))
         denominator = torch.sum(torch.pow(base, 2))
 
-        return numerator / (denominator + self.eps)
+        return torch.sqrt(numerator / (denominator + self.eps))
 
     def __call__(self, base, real):
         diff1 = self.compute_diff1(base, real)
