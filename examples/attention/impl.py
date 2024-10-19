@@ -69,7 +69,7 @@ class FlashAttention(Attention):
                     sq = min(self.block_q, self.seq_q - i * self.block_q)
                     q = query[b, i * self.block_q : i * self.block_q + sq, h]
                     qkv = torch.zeros_like(q)
-                    rmax = torch.zeros(size=(sq, 1))
+                    rmax = torch.ones(size=(sq, 1)) * float('-inf')
                     rsum = torch.zeros_like(rmax)
                     for j in range(loop_kv):
                         sk = min(self.block_kv, self.seq_kv - j * self.block_kv)
@@ -86,28 +86,36 @@ class FlashAttention_v2(FlashAttention):
         super().__init__(batch, q_head, kv_head, head_size, seq_q, seq_kv, softmax_scale, causal)
 
     def compute_block(self, q, k, v, qkv, rmax, rsum, j):
-        qk = qk = torch.matmul(q, k.t()) * self.softmax_scale * LOG2E - rmax
+        if j == 0:
+            qk = qk = torch.matmul(q, k.t()) * self.softmax_scale * LOG2E
+        else:
+            qk = qk = torch.matmul(q, k.t()) * self.softmax_scale * LOG2E - rmax
+
         cmax = torch.amax(qk, dim=-1, keepdim=True)
         max_value = torch.amax(cmax)
 
-        if max_value > MAX_THRESHOLD:
+        if j == 0:
+            qk = qk - cmax
+            qk = torch.pow(2, qk)
+            rsum = torch.sum(qk, dim=-1, keepdim=True)
+            qkv = torch.matmul(qk, v)
+            rmax = cmax
+        elif max_value > MAX_THRESHOLD:
             qk = qk - cmax
             cmax = cmax + rmax
             qk = torch.pow(2, qk)
-            cmax = torch.maximum(cmax, rmax)
             csum = torch.sum(qk, dim=-1, keepdim=True)
             rscale = torch.pow(2, rmax - cmax)
-            csum = rsum * rscale + csum
+            rsum = rsum * rscale + csum
             qkv = qkv * rscale + torch.matmul(qk, v)
-
-            return qkv, cmax, csum
+            rmax = torch.maximum(cmax, rmax)
         else:
             qk = torch.pow(2, qk)
             csum = torch.sum(qk, dim=-1, keepdim=True)
-            csum = rsum + csum
+            rsum = rsum + csum
             qkv = qkv + torch.matmul(qk, v)
 
-            return qkv, rmax, csum
+        return qkv, rmax, rsum
 
     def __call__(self, query, key, value):
         return super().__call__(query, key, value)
